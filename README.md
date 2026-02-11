@@ -89,6 +89,42 @@ Reescribe el **buscador de listas negras** para que la búsqueda **se detenga ta
 
 > Puedes usar `AtomicInteger` o sincronización mínima sobre la región crítica del contador.
 
+### Qué ya implementamos
+
+Para esta parte migramos el validador viejo a un esquema cooperativo: cada hilo revisa su bloque y consulta un `AtomicInteger` global antes de seguir. En cuanto la suma de coincidencias llega al umbral, todos se dan por enterados y regresan sin recorrer servidores extra.
+
+- En `HostBlackListsValidator` dejamos que el contador compartido sea la única señal de parada y mandamos el umbral a cada worker:
+
+  ```java
+  workers[t] = new BlackListSearchThread(
+      start,
+      end,
+      ipaddress,
+      occurrences,
+      foundServers,
+      checkedListsCount,
+      BLACK_LIST_ALARM_COUNT);
+  ```
+
+- En `BlackListSearchThread` el bucle se corta si `globalOccurrences` ya alcanzó el límite, y sólo después de registrar el hallazgo actualizamos el contador para no perder esa coincidencia:
+
+  ```java
+  for (int i = startIndex; i <= endIndex; i++) {
+    if (globalOccurrences.get() >= alarmThreshold) {
+      break;
+    }
+    if (skds.isInBlackListServer(i, host)) {
+      foundServers.add(i);
+      int occ = globalOccurrences.incrementAndGet();
+      if (occ >= alarmThreshold) {
+        break;
+      }
+    }
+  }
+  ```
+
+Con eso logramos la parada temprana sin banderas adicionales, evitamos carreras porque el `AtomicInteger` hace el trabajo pesado y de paso el reporte se arma más rápido cuando la IP ya está condenada.
+
 ---
 
 ## Parte III — (Avance) Sincronización y *Deadlocks* con *Highlander Simulator*
