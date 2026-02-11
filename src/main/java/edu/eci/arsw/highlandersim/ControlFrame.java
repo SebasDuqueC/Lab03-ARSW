@@ -1,12 +1,10 @@
 package edu.eci.arsw.highlandersim;
 
-import edu.eci.arsw.immortals.Immortal;
 import edu.eci.arsw.immortals.ImmortalManager;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
-import java.util.List;
 
 public final class ControlFrame extends JFrame {
 
@@ -75,18 +73,21 @@ public final class ControlFrame extends JFrame {
 
   private void onPauseAndCheck(ActionEvent e) {
     if (manager == null) return;
-    manager.pause();
-    List<Immortal> pop = manager.populationSnapshot();
-    long sum = 0;
+    ImmortalManager.PauseReport report = manager.pauseAndReport();
     StringBuilder sb = new StringBuilder();
-    for (Immortal im : pop) {
-      int h = im.getHealth();
-      sum += h;
-      sb.append(String.format("%-14s : %5d%n", im.name(), h));
+    for (ImmortalManager.ImmortalState im : report.immortals()) {
+      sb.append(String.format("%-14s : %5d%n", im.name(), im.health()));
     }
     sb.append("--------------------------------\n");
-    sb.append("Total Health: ").append(sum).append('\n');
-    sb.append("Score (fights): ").append(manager.scoreBoard().totalFights()).append('\n');
+    sb.append("Total Health: ")
+      .append(report.totalHealth())
+      .append(" / ")
+      .append(report.expectedTotal());
+    if (report.totalHealth() != report.expectedTotal()) {
+      sb.append("  <-- revisar invariante");
+    }
+    sb.append('\n');
+    sb.append("Score (fights): ").append(report.totalFights()).append('\n');
     output.setText(sb.toString());
   }
 

@@ -2,16 +2,14 @@ package edu.eci.arsw.immortals;
 
 import edu.eci.arsw.concurrency.PauseController;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public final class ImmortalManager implements AutoCloseable {
-  private final List<Immortal> population = new ArrayList<>();
-  private final List<Future<?>> futures = new ArrayList<>();
+  private final CopyOnWriteArrayList<Immortal> population = new CopyOnWriteArrayList<>();
   private final PauseController controller = new PauseController();
   private final ScoreBoard scoreBoard = new ScoreBoard();
   private ExecutorService exec;
@@ -19,6 +17,7 @@ public final class ImmortalManager implements AutoCloseable {
   private final String fightMode;
   private final int initialHealth;
   private final int damage;
+  private final long expectedTotalHealth;
 
   public ImmortalManager(int n, String fightMode) {
     this(n, fightMode, Integer.getInteger("health", 100), Integer.getInteger("damage", 10));
@@ -28,8 +27,9 @@ public final class ImmortalManager implements AutoCloseable {
     this.fightMode = fightMode;
     this.initialHealth = initialHealth;
     this.damage = damage;
+    this.expectedTotalHealth = (long) n * initialHealth;
     for (int i=0;i<n;i++) {
-      population.add(new Immortal("Immortal-"+i, initialHealth, damage, population, scoreBoard, controller));
+      population.add(new Immortal("Immortal-"+i, initialHealth, damage, fightMode, population, scoreBoard, controller));
     }
   }
 
@@ -37,15 +37,35 @@ public final class ImmortalManager implements AutoCloseable {
     if (exec != null) stop();
     exec = Executors.newVirtualThreadPerTaskExecutor();
     for (Immortal im : population) {
-      futures.add(exec.submit(im));
+      exec.submit(im);
     }
   }
 
-  public void pause() { controller.pause(); }
+  public void pause() {
+    controller.pause();
+    try {
+      controller.awaitFullPause(population::size);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
   public void resume() { controller.resume(); }
   public void stop() {
+    controller.resume();
     for (Immortal im : population) im.stop();
-    if (exec != null) exec.shutdownNow();
+    if (exec != null) {
+      exec.shutdown();
+      try {
+        if (!exec.awaitTermination(2, TimeUnit.SECONDS)) {
+          exec.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        exec.shutdownNow();
+        Thread.currentThread().interrupt();
+      } finally {
+        exec = null;
+      }
+    }
   }
 
   public int aliveCount() {
@@ -61,11 +81,24 @@ public final class ImmortalManager implements AutoCloseable {
   }
 
   public List<Immortal> populationSnapshot() {
-    return Collections.unmodifiableList(new ArrayList<>(population));
+    return List.copyOf(population);
   }
 
   public ScoreBoard scoreBoard() { return scoreBoard; }
   public PauseController controller() { return controller; }
+  public long expectedTotalHealth() { return expectedTotalHealth; }
+
+  public PauseReport pauseAndReport() {
+    pause();
+    List<ImmortalState> snapshot = population.stream()
+      .map(im -> new ImmortalState(im.name(), im.getHealth()))
+      .toList();
+    long sum = snapshot.stream().mapToLong(ImmortalState::health).sum();
+    return new PauseReport(snapshot, sum, expectedTotalHealth, scoreBoard.totalFights());
+  }
+
+  public record ImmortalState(String name, int health) {}
+  public record PauseReport(List<ImmortalState> immortals, long totalHealth, long expectedTotal, long totalFights) {}
 
   @Override public void close() { stop(); }
 }

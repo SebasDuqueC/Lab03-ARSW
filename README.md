@@ -147,6 +147,40 @@ Con eso logramos la parada temprana sin banderas adicionales, evitamos carreras 
 10. **Remover inmortales muertos** sin bloquear la simulación: analiza si crea una **condición de carrera** con muchos hilos y corrige **sin sincronización global** (colección concurrente o enfoque *lock-free*).  
 11. Implementa completamente **STOP** (apagado ordenado).
 
+### Qué ya implementamos
+
+- **Invariante de salud al día.** Cambiamos la pelea para que el atacante le quite exactamente `damage` puntos (o lo que quede) al rival y se los sume completos. Así la suma total se mantiene fija y, cuando alguien llega a cero, lo sacamos de la lista sin bloquear a los demás.
+
+  ```java
+  private void exchangeHealth(Immortal other) {
+    int hit = Math.min(other.health, this.damage);
+    other.health -= hit;
+    this.health += hit;
+    if (other.health <= 0) {
+      other.health = 0;
+      other.running = false;
+      population.remove(other);
+    }
+  }
+  ```
+
+- **Pausa con barrera cooperativa.** El `PauseController` ahora lleva la cuenta de cuántos hilos ya se estacionaron; el manager marca `pause()` y espera a que todos reporten usando `population::size` como referencia. No seguimos si falta alguno, así que “Pause & Check” no lee estados a medio actualizar.
+
+- **PauseReport para la UI.** En lugar de copiar la lista a ciegas, `ImmortalManager.pauseAndReport()` devuelve un snapshot inmutable con la suma observada, el valor esperado y las peleas acumuladas. La ventana simplemente dibuja ese reporte y avisa si el invariante se rompió.
+
+  ```java
+  public PauseReport pauseAndReport() {
+    pause();
+    List<ImmortalState> snapshot = population.stream()
+      .map(im -> new ImmortalState(im.name(), im.getHealth()))
+      .toList();
+    long sum = snapshot.stream().mapToLong(ImmortalState::health).sum();
+    return new PauseReport(snapshot, sum, expectedTotalHealth, scoreBoard.totalFights());
+  }
+  ```
+
+- **Stop ordenado.** Al pulsar Stop reanudamos cualquier pausa pendiente, pedimos a todos los hilos que salgan con `stop()`, apagamos el executor y esperamos un par de segundos antes de forzar un `shutdownNow`. Nada se queda colgado en pausa.
+
 ---
 
 ## Entregables
