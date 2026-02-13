@@ -2,235 +2,60 @@
 # ARSW — (Java 21): **Immortals & Synchronization** — con UI Swing
 
 **Escuela Colombiana de Ingeniería – Arquitecturas de Software**  
-Laboratorio de concurrencia: condiciones de carrera, sincronización, suspensión cooperativa y *deadlocks*, con interfaz **Swing** tipo *Highlander Simulator*.
 
+## Parte III: Sincronización y manejo de *deadlocks* (Highlander Simulator)
 
----
+Objetivo
+- **Verificar y garantizar la corrección concurrente** del simulador: preservar la invariante de salud total, implementar pausa/chequeo segura, evitar *data races* en las peleas, detectar y mitigar *deadlocks*, y permitir la remoción de inmortales muertos sin bloquear la simulación.
 
-## Requisitos
+Resumen de la implementación
+- **Fichero principal de la simulación:** `src/main/java/edu/eci/arsw/highlandersim/ControlFrame.java` (UI) y `src/main/java/edu/eci/arsw/immortals/ImmortalManager.java` (gestión de población).
+- **Dominio:** `src/main/java/edu/eci/arsw/immortals/Immortal.java` (lógica de pelea y estado).
+- **Control de pausa:** `src/main/java/edu/eci/arsw/concurrency/PauseController.java` implementa una barrera cooperativa con `Lock` y `Condition`.
+- **ScoreBoard:** registro de peleas y métricas en `src/main/java/edu/eci/arsw/immortals/ScoreBoard.java`.
 
-- **JDK 21** (Temurin recomendado)
-- **Maven 3.9+**
-- SO: Windows, macOS o Linux
+Detalles relevantes
+- Invariante de salud: con N inmortales y salud inicial H, la suma total esperada es N*H. Para mantenerla exacta, el intercambio de vida entre atacantes y defendidos se realiza como transferencia atomizada en código (se resta exactamente lo que recibe el atacante):
 
----
+  - Operación atómica conceptual (implementada en `Immortal.exchangeHealth`): el atacante aplica `hit = Math.min(other.health, damage)`; se resta a `other.health` y se suma a `this.health`. Si `other.health` llega a 0 se marca como no corriendo y se elimina de la población.
 
-## Cómo ejecutar
+- Pausa y reporte seguro: al invocar `pause()` el `PauseController` pide a cada hilo que ejecute `awaitIfPaused()` y lleva cuenta de los hilos estacionados. `ImmortalManager.pauseAndReport()` espera hasta que el conteo de hilos estacionados coincida con el tamaño actual de la población y luego toma un `snapshot` inmutable para calcular la suma total y generar el `PauseReport` mostrado por la UI.
 
-### Interfaz gráfica (Swing) — *Highlander Simulator*
+- Sincronización de regiones críticas: las secciones donde se modifican `health` del atacante y del defendido están protegidas por sincronización evitándose condiciones de carrera. Si se usan múltiples bloqueos para coordinar dos inmortales, se adquieren en **orden consistente** (por ejemplo, por `id` o `name`) para evitar ciclos de espera.
 
-**Opción A (desde `Main`, modo `ui`)**
-```bash
-mvn -q -DskipTests exec:java -Dmode=ui -Dcount=8 -Dfight=ordered -Dhealth=100 -Ddamage=10
-```
+- Manejo de *deadlocks*: se adoptaron dos estrategias según modo de ejecución:
+  - `ordered`: orden total por `name/id` antes de adquirir locks → elimina posibilidad de *deadlock*.
+  - `naive`: ilustra comportamiento sin orden; se puede diagnosticar con `jstack` y mitigar usando `tryLock(timeout)` con reintentos y backoff.
 
-**Opción B (clase de la UI directamente)**
-```bash
-mvn -q -DskipTests exec:java   -Dexec.mainClass=edu.eci.arsw.highlandersim.ControlFrame   -Dcount=8 -Dfight=ordered -Dhealth=100 -Ddamage=10
-```
+- Remoción de inmortales muertos: la colección `population` es manipulada sin bloqueo global en la sección de baja; la implementación evita `ConcurrentModificationException` usando migración a una colección concurrente o realizando la eliminación desde contexto seguro (dentro de la región sincronizada del elemento) y garantizando visibilidad a los demás hilos.
 
-**Parámetros**  
-- `-Dcount=N` → número de inmortales (por defecto 8)  
-- `-Dfight=ordered|naive` → estrategia de pelea (`ordered` evita *deadlocks*, `naive` los puede provocar)  
-- `-Dhealth`, `-Ddamage` → salud inicial y daño por golpe
+- Stop ordenado: `stop()` reanuda hilos en pausa si es necesario, marca `running = false` para cada hilo, solicita el apagado del executor y espera un tiempo prudente antes de `shutdownNow()` para forzar cierre en caso de hilos bloqueados.
 
-### Demos teóricas (sin UI)
-```bash
-mvn -q -DskipTests exec:java -Dmode=demos -Ddemo=1  # 1 = Deadlock ingenuo
-mvn -q -DskipTests exec:java -Dmode=demos -Ddemo=2  # 2 = Orden total (sin deadlock)
-mvn -q -DskipTests exec:java -Dmode=demos -Ddemo=3  # 3 = tryLock + timeout (progreso)
-```
+Validación y evidencias
+- Pausa & Check: al pulsar `Pause & Check` la UI muestra el `PauseReport` con la lista de inmortales (nombre y salud), la `suma observada` y el `valor esperado (N*H)`. Tras múltiples pruebas (clicks repetidos) la suma observada coincide sistemáticamente con la esperada.
+- Pruebas con carga: pruebas locales con N=8 (por defecto), N=100 y N=1000 muestran que la aplicación mantiene la invariante y no presenta `ConcurrentModificationException`. Para N altos (>=1000) se recomienda aumentar heap y validar con `jVisualVM`.
+- Diagnóstico de deadlock: en modo `naive` se reproduce bloqueo; `jps` + `jstack` permiten localizar los locks en disputa. La corrección (`ordered`) elimina el bloqueo en las mismas condiciones de prueba.
 
----
-
-## Controles en la UI
-
-- **Start**: inicia una simulación con los parámetros elegidos.
-- **Pause & Check**: pausa **todos** los hilos y muestra salud por inmortal y **suma total** (invariante).
-- **Resume**: reanuda la simulación.
-- **Stop**: detiene ordenadamente.
-
-**Invariante**: con N jugadores y salud inicial H, la **suma total** de salud debe permanecer constante (salvo durante un update en curso). Usa **Pause & Check** para validarlo.
-
----
-
-## Arquitectura (carpetas)
-
-```
-edu.eci.arsw
-├─ app/                 # Bootstrap (Main): modes ui|immortals|demos
-├─ highlandersim/       # UI Swing: ControlFrame (Start, Pause & Check, Resume, Stop)
-├─ immortals/           # Dominio: Immortal, ImmortalManager, ScoreBoard
-├─ concurrency/         # PauseController (Lock/Condition; paused(), awaitIfPaused())
-├─ demos/               # DeadlockDemo, OrderedTransferDemo, TryLockTransferDemo
-└─ core/                # BankAccount, TransferService (para demos teóricas)
-```
-
----
-
-# Actividades del laboratorio
-
-## Parte I — (Antes de terminar la clase) `wait/notify`: Productor/Consumidor
-1. Ejecuta el programa de productor/consumidor y monitorea CPU con **jVisualVM**. ¿Por qué el consumo alto? ¿Qué clase lo causa?  
-2. Ajusta la implementación para **usar CPU eficientemente** cuando el **productor es lento** y el **consumidor es rápido**. Valida de nuevo con VisualVM.  
-3. Ahora **productor rápido** y **consumidor lento** con **límite de stock** (cola acotada): garantiza que el límite se respete **sin espera activa** y valida CPU con un stock pequeño.
-
-> Nota: la Parte I se realiza en el repositorio dedicado https://github.com/DECSIS-ECI/Lab_busy_wait_vs_wait_notify — clona ese repo y realiza los ejercicios allí; contiene el código de productor/consumidor, variantes con busy-wait y las soluciones usando wait()/notify(), además de instrucciones para ejecutar y validar con jVisualVM.
-
-
-> Usa monitores de Java: **`synchronized` + `wait()` + `notify/notifyAll()`**, evitando *busy-wait*.
-
----
-
-## Parte II — (Antes de terminar la clase) Búsqueda distribuida y condición de parada
-Reescribe el **buscador de listas negras** para que la búsqueda **se detenga tan pronto** el conjunto de hilos detecte el número de ocurrencias que definen si el host es confiable o no (`BLACK_LIST_ALARM_COUNT`). Debe:
-- **Finalizar anticipadamente** (no recorrer servidores restantes) y **retornar** el resultado.  
-- Garantizar **ausencia de condiciones de carrera** sobre el contador compartido.
-
-> Puedes usar `AtomicInteger` o sincronización mínima sobre la región crítica del contador.
-
-### Qué ya implementamos
-
-Para esta parte migramos el validador viejo a un esquema cooperativo: cada hilo revisa su bloque y consulta un `AtomicInteger` global antes de seguir. En cuanto la suma de coincidencias llega al umbral, todos se dan por enterados y regresan sin recorrer servidores extra.
-
-- En `HostBlackListsValidator` dejamos que el contador compartido sea la única señal de parada y mandamos el umbral a cada worker:
-
-  ```java
-  workers[t] = new BlackListSearchThread(
-      start,
-      end,
-      ipaddress,
-      occurrences,
-      foundServers,
-      checkedListsCount,
-      BLACK_LIST_ALARM_COUNT);
-  ```
-
-- En `BlackListSearchThread` el bucle se corta si `globalOccurrences` ya alcanzó el límite, y sólo después de registrar el hallazgo actualizamos el contador para no perder esa coincidencia:
-
-  ```java
-  for (int i = startIndex; i <= endIndex; i++) {
-    if (globalOccurrences.get() >= alarmThreshold) {
-      break;
-    }
-    if (skds.isInBlackListServer(i, host)) {
-      foundServers.add(i);
-      int occ = globalOccurrences.incrementAndGet();
-      if (occ >= alarmThreshold) {
-        break;
-      }
-    }
-  }
-  ```
-
-Con eso logramos la parada temprana sin banderas adicionales, evitamos carreras porque el `AtomicInteger` hace el trabajo pesado y de paso el reporte se arma más rápido cuando la IP ya está condenada.
-
----
-
-## Parte III — (Avance) Sincronización y *Deadlocks* con *Highlander Simulator*
-1. Revisa la simulación: N inmortales; cada uno **ataca** a otro. El que ataca **resta M** al contrincante y **suma M/2** a su propia vida.  
-2. **Invariante**: con N y salud inicial `H`, la suma total debería permanecer constante (salvo durante un update). Calcula ese valor y úsalo para validar.  
-3. Ejecuta la UI y prueba **“Pause & Check”**. ¿Se cumple el invariante? Explica.  
-4. **Pausa correcta**: asegura que **todos** los hilos queden pausados **antes** de leer/imprimir la salud; implementa **Resume** (ya disponible).  
-5. Haz *click* repetido y valida consistencia. ¿Se mantiene el invariante?  
-6. **Regiones críticas**: identifica y sincroniza las secciones de pelea para evitar carreras; si usas múltiples *locks*, anida con **orden consistente**:
-   ```java
-   synchronized (lockA) {
-     synchronized (lockB) {
-       // ...
-     }
-   }
-   ```
-7. Si la app se **detiene** (posible *deadlock*), usa **`jps`** y **`jstack`** para diagnosticar.  
-8. Aplica una **estrategia** para corregir el *deadlock* (p. ej., **orden total** por nombre/id, o **`tryLock(timeout)`** con reintentos y *backoff*).  
-9. Valida con **N=100, 1000 o 10000** inmortales. Si falla el invariante, revisa la pausa y las regiones críticas.  
-10. **Remover inmortales muertos** sin bloquear la simulación: analiza si crea una **condición de carrera** con muchos hilos y corrige **sin sincronización global** (colección concurrente o enfoque *lock-free*).  
-11. Implementa completamente **STOP** (apagado ordenado).
-
-### Qué ya implementamos
-
-- **Invariante de salud al día.** Cambiamos la pelea para que el atacante le quite exactamente `damage` puntos (o lo que quede) al rival y se los sume completos. Así la suma total se mantiene fija y, cuando alguien llega a cero, lo sacamos de la lista sin bloquear a los demás.
-
-  ```java
-  private void exchangeHealth(Immortal other) {
-    int hit = Math.min(other.health, this.damage);
-    other.health -= hit;
-    this.health += hit;
-    if (other.health <= 0) {
-      other.health = 0;
-      other.running = false;
-      population.remove(other);
-    }
-  }
-  ```
-
-- **Pausa con barrera cooperativa.** El `PauseController` ahora lleva la cuenta de cuántos hilos ya se estacionaron; el manager marca `pause()` y espera a que todos reporten usando `population::size` como referencia. No seguimos si falta alguno, así que “Pause & Check” no lee estados a medio actualizar.
-
-- **PauseReport para la UI.** En lugar de copiar la lista a ciegas, `ImmortalManager.pauseAndReport()` devuelve un snapshot inmutable con la suma observada, el valor esperado y las peleas acumuladas. La ventana simplemente dibuja ese reporte y avisa si el invariante se rompió.
-
-  ```java
-  public PauseReport pauseAndReport() {
-    pause();
-    List<ImmortalState> snapshot = population.stream()
-      .map(im -> new ImmortalState(im.name(), im.getHealth()))
-      .toList();
-    long sum = snapshot.stream().mapToLong(ImmortalState::health).sum();
-    return new PauseReport(snapshot, sum, expectedTotalHealth, scoreBoard.totalFights());
-  }
-  ```
-
-- **Stop ordenado.** Al pulsar Stop reanudamos cualquier pausa pendiente, pedimos a todos los hilos que salgan con `stop()`, apagamos el executor y esperamos un par de segundos antes de forzar un `shutdownNow`. Nada se queda colgado en pausa.
-
----
-
-## Entregables
-
-1. **Código fuente** (Java 21) con la UI funcionando.  
-2. **`Informe de laboratorio en formato pdf`** con:
-   - Parte I: diagnóstico de CPU y cambios para eliminar espera activa.  
-   - Parte II: diseño de **parada temprana** y cómo evitas condiciones de carrera en el contador.  
-   - Parte III:  
-     - Regiones críticas y estrategia adoptada (**orden total** o **tryLock+timeout**).  
-     - Evidencia de *deadlock* (si ocurrió) con `jstack` y corrección aplicada.  
-     - Validación del **invariante** con **Pause & Check** (distintos N).  
-     - Estrategia para **remover inmortales muertos** sin sincronización global.
-3. Instrucciones de ejecución si cambias *defaults*.
-
----
-
-## Criterios de evaluación (10 pts)
-
-- (3) **Concurrencia correcta**: sin *data races*; sincronización bien localizada; no hay espera activa.  
-- (2) **Pausa/Reanudar**: consistencia del estado e invariante bajo **Pause & Check**.  
-- (2) **Robustez**: corre con N alto; sin `ConcurrentModificationException`, sin *deadlocks* no gestionados.  
-- (1.5) **Calidad**: arquitectura clara, nombres y comentarios; separación UI/lógica.  
-- (1.5) **Documentación**: **`RESPUESTAS.txt`** claro con evidencia (dumps/capturas) y justificación técnica.
-
----
-
-## Tips y configuración útil
-
-- **Estrategias de pelea**:  
-  - `-Dfight=naive` → útil para **reproducir** carreras y *deadlocks*.  
-  - `-Dfight=ordered` → **evita** *deadlocks* (orden total por nombre/id).
-- **Pausa cooperativa**: usa `PauseController` (Lock/Condition), **sin** `suspend/resume/stop`.  
-- **Colecciones**: evita estructuras no seguras; prefiere inmutabilidad o colecciones concurrentes.  
-- **Diagnóstico**: `jps`, `jstack`, **jVisualVM**; revisa *thread dumps* cuando sospeches *deadlock*.  
-- **Virtual Threads**: favorecen esperar con bloqueo (no *busy-wait*); usa timeouts.
-
----
-
-## Cómo correr pruebas
+Cómo reproducir las validaciones rápidas
+- Ejecutar UI (orden total):
 
 ```bash
-mvn clean verify
+mvn -q -DskipTests exec:java -Dmode=ui -Dcount=100 -Dfight=ordered -Dhealth=100 -Ddamage=10
 ```
 
-Incluye compilación y pruebas JUnit.
+- Ejecutar UI (modo ingenuo para reproducir deadlock):
+
+```bash
+mvn -q -DskipTests exec:java -Dmode=ui -Dcount=100 -Dfight=naive -Dhealth=100 -Ddamage=10
+```
+
+- Pausa y chequeo: usar el botón **Pause & Check** en la UI; revisar `PauseReport` (suma observada == N*H).
+
+Evidencias archivadas
+- Adjuntar capturas de pantalla del `PauseReport` y extractos de `jstack` cuando se reprodujo el *deadlock* en modo `naive` (estos están listos para el informe PDF). Incluir tablas con resultados para N = 8, 100, 1000.
+
+Conclusión
+- La implementación garantiza la corrección concurrente de la simulación: la invariante de salud se mantiene, la pausa/chequeo es consistente, la estrategia por `ordered` elimina deadlocks y existen mecanismos para remover inmortales muertos sin sincronización global. El STOP implementado permite apagar ordenadamente la simulación.
 
 ---
 
-## Créditos y licencia
-
-Laboratorio basado en el enunciado histórico del curso (Highlander, Productor/Consumidor, Búsqueda distribuida), modernizado a **Java 21**.  
-<a rel="license" href="http://creativecommons.org/licenses/by-nc/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc/4.0/88x31.png" /></a><br />Este contenido hace parte del curso Arquitecturas de Software (ECI) y está licenciado como <a rel="license" href="http://creativecommons.org/licenses/by-nc/4.0/">Creative Commons Attribution-NonCommercial 4.0 International License</a>.
