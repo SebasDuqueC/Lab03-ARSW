@@ -10,6 +10,7 @@ Contenido de cada ZIP
 - Código fuente completo
 - Instrucciones de compilación y ejecución
 - Capturas o logs que evidencian el correcto funcionamiento
+- Informe de la parte: cada ZIP incluye un `README` con el informe y resultados específicos de esa parte del laboratorio
 
 Contacto
 - Para dudas sobre las soluciones o problemas al ejecutar el contenido de los ZIPs, contactar a:
