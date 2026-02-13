@@ -51,8 +51,6 @@ mvn -q -DskipTests exec:java -Dmode=ui -Dcount=100 -Dfight=naive -Dhealth=100 -D
 
 - Pausa y chequeo: usar el botón **Pause & Check** en la UI; revisar `PauseReport` (suma observada == N*H).
 
-Evidencias archivadas
-- Adjuntar capturas de pantalla del `PauseReport` y extractos de `jstack` cuando se reprodujo el *deadlock* en modo `naive` (estos están listos para el informe PDF). Incluir tablas con resultados para N = 8, 100, 1000.
 
 Conclusión
 - La implementación garantiza la corrección concurrente de la simulación: la invariante de salud se mantiene, la pausa/chequeo es consistente, la estrategia por `ordered` elimina deadlocks y existen mecanismos para remover inmortales muertos sin sincronización global. El STOP implementado permite apagar ordenadamente la simulación.
